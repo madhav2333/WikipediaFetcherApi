@@ -1,0 +1,104 @@
+import java.io.*;
+import java.net.*;
+import java.util.concurrent.*;
+import java.util.regex.*;
+
+public class WikipediaServer {
+    private static final int PORT = 8080;
+    private static final ExecutorService threadPool = Executors.newFixedThreadPool(50);
+
+    public static void main(String[] args) throws IOException {
+        ServerSocket serverSocket = new ServerSocket(PORT);
+        System.out.println("Server running on http://localhost:" + PORT);
+
+        while (true) {
+            Socket client = serverSocket.accept();
+            threadPool.submit(() -> handleClient(client));
+        }
+    }
+
+    private static void handleClient(Socket client) {
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(client.getInputStream()));
+             BufferedWriter out = new BufferedWriter(new OutputStreamWriter(client.getOutputStream()))) {
+
+            String line = in.readLine();
+            if (line == null || line.isEmpty()) return;
+
+            // Example line: GET /api/India HTTP/1.1
+            Matcher matcher = Pattern.compile("GET /(api/)?(\\w+)?").matcher(line);
+            String path = "/";
+            boolean jsonMode = false;
+            String query = null;
+
+            if (matcher.find()) {
+                path = matcher.group();
+                query = matcher.group(2);
+                jsonMode = "api".equals(matcher.group(1));
+            }
+
+            while (!(line = in.readLine()).isEmpty()) {} // Read remaining headers
+
+            if ("/".equals(path) || query == null) {
+                sendForm(out);
+            } else {
+                fetchAndRespond(query, out, jsonMode);
+            }
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    // Display HTML search form
+    private static void sendForm(BufferedWriter out) throws IOException {
+        String html = """
+            <html><head><title>Wikipedia Fetcher</title></head>
+            <body><h2>Enter a term to search Wikipedia:</h2>
+            <form method='get' action='/'>
+              <input name='India' placeholder='e.g. India'><button>Search</button>
+            </form></body></html>
+            """;
+
+        writeHttpResponse(out, "text/html", html);
+    }
+
+    // Fetch Wikipedia content using Java's URL and send response
+    private static void fetchAndRespond(String term, BufferedWriter out, boolean jsonMode) throws IOException {
+        String apiUrl = "https://en.wikipedia.org/api/rest_v1/page/summary/" + term;
+        HttpURLConnection conn = (HttpURLConnection) new URL(apiUrl).openConnection();
+        conn.setRequestMethod("GET");
+
+        BufferedReader wikiIn = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+        StringBuilder result = new StringBuilder();
+        String line;
+
+        while ((line = wikiIn.readLine()) != null) {
+            result.append(line).append("\n");
+        }
+
+        wikiIn.close();
+
+        if (jsonMode) {
+            writeHttpResponse(out, "application/json", result.toString());
+        } else {
+            String html = """
+                <html><head><title>Result</title></head>
+                <body><h2>Result for <b>%s</b></h2>
+                <pre>%s</pre></body></html>
+                """.formatted(term, result.toString().replace("<", "&lt;"));
+
+            writeHttpResponse(out, "text/html", html);
+        }
+    }
+
+    // Writes HTTP response headers and body
+    private static void writeHttpResponse(BufferedWriter out, String contentType, String body) throws IOException {
+        out.write("HTTP/1.1 200 OK\r\n");
+        out.write("Content-Type: " + contentType + "; charset=UTF-8\r\n");
+        out.write("Content-Length: " + body.getBytes().length + "\r\n");
+        out.write("Connection: close\r\n");
+        out.write("\r\n");
+        out.write(body);
+        out.flush();
+    }
+}
